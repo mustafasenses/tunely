@@ -91,6 +91,47 @@ test.describe('English (default locale)', () => {
     await expect.poll(() => displayedNote(page)).toBe('E4');
   });
 
+  test('pause moves focus to Resume, resume moves it back to Pause', async ({ page }) => {
+    await startTuner(page, '?mock=sharp');
+    await expect(page.getByRole('button', { name: 'Pause' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('button', { name: 'Resume' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#paused')).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Pause' })).toBeFocused();
+  });
+
+  test('exposes the displayed reading as data-note / data-midi (letter names)', async ({ page }) => {
+    await startTuner(page, '?mock=flat');
+    await expect(tuner(page)).toHaveAttribute('data-note', 'A4');
+    await expect(tuner(page)).toHaveAttribute('data-midi', '69');
+  });
+
+  test('a microphone that disappears leads to a recoverable "Microphone stopped" card', async ({ page }) => {
+    await startTuner(page, '?mock=ended');
+    await expect.poll(() => displayedNote(page)).toBe('A4');
+    await expect(page.locator('#paused')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('#paused')).toContainText('Microphone stopped');
+    await expect.poll(() => displayedNote(page)).toBe('');
+    await page.getByRole('button', { name: 'Resume' }).click();
+    await expect(page.locator('#paused')).toBeHidden();
+    await expect.poll(() => displayedNote(page)).toBe('A4');
+  });
+
+  test('audio suspended by the browser → "Tap to resume" card that resumes in the tap', async ({ page }) => {
+    await startTuner(page, '?mock=suspended');
+    await expect(page.locator('#paused')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('#paused')).toContainText('Listening paused');
+    await page.getByRole('button', { name: 'Resume' }).click();
+    await expect(page.locator('#paused')).toBeHidden();
+    await expect.poll(() => displayedNote(page)).toBe('A4');
+  });
+
+  test('a mic muted by another app is explained instead of "play louder"', async ({ page }) => {
+    await startTuner(page, '?mock=muted');
+    await expect(page.locator('#hint-text')).toHaveText('The microphone is in use by another app', { timeout: 5_000 });
+  });
+
   test('reference tone plays and stops without errors', async ({ page }) => {
     await startTuner(page, '?mock=flat');
     await expect.poll(() => displayedNote(page)).toBe('A4');
@@ -127,7 +168,7 @@ test.describe('Turkish locale', () => {
     await page.goto('./');
     await expect(page.locator('html')).toHaveAttribute('lang', 'tr');
     await expect(page).toHaveTitle('Tunely — Kromatik Akort Aleti');
-    await expect(page.getByText('Ses cihazınızdan asla çıkmaz.')).toBeVisible();
+    await expect(page.getByText('Sesiniz cihazınızdan hiçbir yere gönderilmez.')).toBeVisible();
     await page.goto('./?mock=flat');
     await page.getByRole('button', { name: 'Akort etmeye başla' }).click();
     await expect.poll(() => displayedNote(page)).toBe('La4');
@@ -135,6 +176,8 @@ test.describe('Turkish locale', () => {
     await expect(page.locator('#hint-text')).toHaveText('Pes — yükselt ↑');
     await expect(page.locator('#a4-chip')).toHaveText('La4 = 440 Hz');
     await expect(page.getByRole('button', { name: 'Duraklat' })).toBeVisible();
+    // Turkish number format: decimal comma.
+    await expect(page.locator('#hz-target')).toHaveText('440,0 Hz');
   });
 
   test('Turkish in-tune and too-high hints', async ({ page }) => {
@@ -151,6 +194,7 @@ test.describe('Turkish locale', () => {
 const ERROR_CASES = [
   { mode: 'error-denied', code: 'permission-denied', title: 'Microphone access is blocked', retry: true, reload: true },
   { mode: 'error-nomic', code: 'no-microphone', title: 'No microphone found', retry: true, reload: false },
+  { mode: 'error-busy', code: 'mic-busy', title: 'The microphone is busy', retry: true, reload: false },
   // On plain http (localhost) "Try again" switches to https://.
   { mode: 'error-insecure', code: 'insecure-context', title: 'This page needs a secure connection', retry: true, reload: false },
   { mode: 'error-unsupported', code: 'unsupported', title: 'This browser can’t run the tuner', retry: false, reload: false },

@@ -35,6 +35,10 @@ describe('hintFor', () => {
   it('uses listening / weak hints without a reading', () => {
     expect(hintFor('listening', null, false)).toBe('hintListening');
     expect(hintFor('listening', null, true)).toBe('hintWeak');
+    // A mic muted by the OS is explained instead of "play louder".
+    expect(hintFor('listening', null, true, true)).toBe('hintMicMuted');
+    expect(hintFor('listening', null, false, true)).toBe('hintMicMuted');
+    expect(hintFor('detected', -20, false, true)).toBe('hintLow');
   });
 });
 
@@ -48,6 +52,12 @@ describe('formatting', () => {
   it('formats Hz', () => {
     expect(formatHz(440)).toBe('440.0');
     expect(formatHz(2093.0045)).toBe('2093');
+  });
+  it('formats Hz with the language’s decimal separator (TR comma), no grouping', () => {
+    expect(formatHz(261.6256, 'tr')).toBe('261,6');
+    expect(formatHz(261.6256, 'en')).toBe('261.6');
+    expect(formatHz(2093.0045, 'tr')).toBe('2093');
+    expect(formatHz(4186.01, 'en')).toBe('4186');
   });
 });
 

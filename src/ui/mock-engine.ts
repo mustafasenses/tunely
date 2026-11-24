@@ -5,13 +5,17 @@
 //   ?mock=holding         note, then permanently holding
 //   ?mock=listening       silence (idle nudge hint after 8 s)
 //   ?mock=weak            quiet input with no pitch → "play louder or move closer" hint
-//   ?mock=error-denied | error-nomic | error-insecure | error-unsupported | error-unknown
+//   ?mock=ended           a note, then the mic "disappears" after 2.5 s (track ended → engine stops)
+//   ?mock=suspended       audio suspended by the browser after 1.5 s until resumeAudio() (a tap)
+//   ?mock=muted           the OS mutes the mic track after 1.5 s (another app took it)
+//   ?mock=error-denied | error-nomic | error-busy | error-insecure | error-unsupported | error-unknown
 import { midiToFrequency } from '../music/notes';
 import { TunerError, type TunerEngine, type TunerErrorCode, type TunerFrame } from '../audio/types';
 
 const ERRORS: Record<string, TunerErrorCode> = {
   'error-denied': 'permission-denied',
   'error-nomic': 'no-microphone',
+  'error-busy': 'mic-busy',
   'error-insecure': 'insecure-context',
   'error-unsupported': 'unsupported',
   'error-unknown': 'unknown',
@@ -52,6 +56,9 @@ export function createMockEngine(scenario: string): TunerEngine {
   let muted = false;
   let t0 = 0;
   let seed = 1;
+  let generation = 0;
+  let suspended = false;
+  let resumedAt = -Infinity;
   const noise = (): number => {
     seed = (seed * 16807) % 2147483647;
     return seed / 2147483647 - 0.5;
@@ -71,6 +78,21 @@ export function createMockEngine(scenario: string): TunerEngine {
   const tick = (): void => {
     const time = performance.now();
     const t = time - t0;
+    if (scenario === 'ended' && t > 2500) {
+      // Track ended: final listening frame, then the engine is no longer running.
+      stop();
+      emit(listeningFrame(time, 0));
+      return;
+    }
+    if (scenario === 'suspended' && t > 1500 && time - resumedAt > 4000) suspended = true;
+    if (suspended) {
+      emit({ ...listeningFrame(time, 0), input: 'suspended' });
+      return;
+    }
+    if (scenario === 'muted' && t > 1500) {
+      emit({ ...listeningFrame(time, 0), input: 'muted' });
+      return;
+    }
     if (muted) {
       emit(listeningFrame(time, 0.02));
       return;
@@ -84,7 +106,7 @@ export function createMockEngine(scenario: string): TunerEngine {
       emit(listeningFrame(time, 0.14 + noise() * 0.05));
       return;
     }
-    const steady = STEADY[scenario];
+    const steady = STEADY[scenario] ?? (scenario === 'ended' || scenario === 'suspended' || scenario === 'muted' ? STEADY.flat : undefined);
     if (steady) {
       const holdingNow = scenario === 'holding' && t > 900;
       const cents = steady.startCents + (holdingNow ? 0 : noise() * 0.5);
@@ -127,20 +149,31 @@ export function createMockEngine(scenario: string): TunerEngine {
     });
   };
 
+  function stop(): void {
+    generation++;
+    running = false;
+    suspended = false;
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+  }
+
   return {
     async start() {
       const err = ERRORS[scenario];
+      const gen = ++generation;
       await new Promise((r) => setTimeout(r, 350));
+      if (gen !== generation) throw new TunerError('aborted', 'mock start cancelled by stop()');
       if (err) throw new TunerError(err, `mock ${err}`);
       if (running) return;
       running = true;
       t0 = performance.now();
       timer = setInterval(tick, 1000 / 50);
     },
-    stop() {
-      running = false;
-      if (timer !== null) clearInterval(timer);
-      timer = null;
+    stop,
+    async resumeAudio() {
+      suspended = false;
+      resumedAt = performance.now();
+      return running;
     },
     onFrame(cb) {
       listeners.add(cb);

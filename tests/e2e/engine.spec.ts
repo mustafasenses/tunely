@@ -69,6 +69,84 @@ test.describe('sine A4 440 Hz', () => {
   });
 });
 
+test.describe('input health (real engine)', () => {
+  test.use({ wav: 'sine-a4-440.wav' });
+
+  // Capture the app's AudioContexts and mic streams so the tests can interfere with them.
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      const w = window as unknown as { __ctxs: AudioContext[]; __streams: MediaStream[] };
+      w.__ctxs = [];
+      w.__streams = [];
+      const AC = window.AudioContext;
+      window.AudioContext = class extends AC {
+        constructor(o?: AudioContextOptions) {
+          super(o);
+          w.__ctxs.push(this);
+        }
+      };
+      const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async (c) => {
+        const st = await gum(c);
+        w.__streams.push(st);
+        return st;
+      };
+    });
+  });
+
+  test('mic track ending (unplugged / revoked) → reading cleared, "Microphone stopped" with Resume', async ({ page }) => {
+    await startTuner(page);
+    await expect.poll(() => displayedNote(page), { timeout: DETECT_TIMEOUT }).toBe('A4');
+    await page.evaluate(() => {
+      for (const t of (window as unknown as { __streams: MediaStream[] }).__streams.flatMap((s) => s.getTracks())) {
+        t.stop(); // stop() alone fires no event; the UA fires 'ended' when a device goes away
+        t.dispatchEvent(new Event('ended'));
+      }
+    });
+    await expect(page.locator('#paused')).toBeVisible();
+    await expect(page.locator('#paused')).toContainText('Microphone stopped');
+    await expect.poll(() => displayedNote(page)).toBe('');
+    await page.getByRole('button', { name: 'Resume' }).click();
+    await expect(page.locator('#paused')).toBeHidden();
+    await expect.poll(() => displayedNote(page), { timeout: DETECT_TIMEOUT }).toBe('A4');
+  });
+
+  test('suspended AudioContext → no stale re-analysis; "Listening paused" card resumes it in the tap', async ({ page }) => {
+    await startTuner(page);
+    await expect.poll(() => displayedNote(page), { timeout: DETECT_TIMEOUT }).toBe('A4');
+    // Like iOS after an interruption: the context is suspended and resume() without a user
+    // gesture does nothing (Chromium would auto-resume, which the engine also tries).
+    await page.evaluate(async () => {
+      const ctx = (window as unknown as { __ctxs: AudioContext[] }).__ctxs.at(-1)!;
+      ctx.resume = () => Promise.resolve();
+      await ctx.suspend();
+    });
+    await expect(page.locator('#paused')).toBeVisible();
+    await expect(page.locator('#paused')).toContainText('Listening paused');
+    // Holding → listening instead of re-detecting the frozen buffer forever.
+    await expect(tuner(page)).toHaveAttribute('data-status', 'listening', { timeout: 4_000 });
+    await page.evaluate(() => {
+      const ctx = (window as unknown as { __ctxs: AudioContext[] }).__ctxs.at(-1)!;
+      delete (ctx as unknown as { resume?: unknown }).resume; // a real tap can resume again
+    });
+    await page.getByRole('button', { name: 'Resume' }).click();
+    await expect(page.locator('#paused')).toBeHidden();
+    await expect.poll(() => displayedNote(page), { timeout: DETECT_TIMEOUT }).toBe('A4');
+  });
+
+  test('mic track muted by the system → "in use by another app" hint, no stale reading', async ({ page }) => {
+    await startTuner(page);
+    await expect.poll(() => displayedNote(page), { timeout: DETECT_TIMEOUT }).toBe('A4');
+    await page.evaluate(() => {
+      for (const t of (window as unknown as { __streams: MediaStream[] }).__streams.flatMap((s) => s.getTracks())) {
+        Object.defineProperty(t, 'muted', { configurable: true, get: () => true });
+      }
+    });
+    await expect(page.locator('#hint-text')).toHaveText('The microphone is in use by another app', { timeout: 4_000 });
+    await expect.poll(() => displayedNote(page)).toBe('');
+  });
+});
+
 test.describe('sine 442 Hz (A4 +7.85¢)', () => {
   test.use({ wav: 'sine-a4-442.wav' });
 
@@ -127,12 +205,13 @@ for (const { wav, note } of [
       const cents = await displayedCents(page);
       expect(cents).not.toBeNull();
       expect(Math.abs(cents!)).toBeLessThanOrEqual(3);
-      // The fixture loops (pluck, decay, short silence): wait for the decay → holding → next
-      // pluck cycle. The held reading keeps the note, and no wrong note/octave ever shows.
+      // The fixture loops (pluck, decay, 3 s of silence): wait for the decay → holding →
+      // listening (the hold expires in the silent tail) → next pluck cycle. The held reading
+      // keeps the note, and no wrong note/octave ever shows.
       await expect
-        .poll(async () => containsRun(await recordedStatuses(page), ['holding', 'detected']), {
-          timeout: DETECT_TIMEOUT,
-          message: 'decay → holding → re-detected',
+        .poll(async () => containsRun(await recordedStatuses(page), ['detected', 'holding', 'listening', 'detected']), {
+          timeout: 15_000,
+          message: 'decay → holding → listening → re-detected',
         })
         .toBe(true);
       expect(await recordedNotes(page)).toEqual([note]);
@@ -146,7 +225,7 @@ test.describe('kalimba sequence C4 → E4 → G4', () => {
   test('displayed note follows the plucked notes in order', async ({ page }) => {
     await startTuner(page);
     await recordNotes(page);
-    // The fixture loops (5.3 s), so the run may start mid-sequence: look for C4, E4, G4 in a row.
+    // The fixture loops (8.3 s), so the run may start mid-sequence: look for C4, E4, G4 in a row.
     await expect
       .poll(async () => containsRun(await recordedNotes(page), ['C4', 'E4', 'G4']), {
         timeout: 15_000,

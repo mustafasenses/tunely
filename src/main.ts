@@ -31,6 +31,37 @@ function registerServiceWorker(): void {
   };
   if (document.readyState === 'complete') register();
   else window.addEventListener('load', register, { once: true });
+  reloadOnUpdate();
+}
+
+/**
+ * A new deploy activates its service worker right away (skipWaiting + clients.claim). Reload
+ * into the new version — but only while nobody is tuning (start / error screen, or paused),
+ * never in the middle of a tuning session; otherwise wait until the user pauses / leaves.
+ */
+function reloadOnUpdate(): void {
+  const sw = navigator.serviceWorker;
+  // The first install also fires controllerchange (clients.claim): not an update.
+  let hadController = sw.controller !== null;
+  let pending = false;
+  const html = document.documentElement;
+  const idle = (): boolean => html.dataset.view !== 'tuner' || html.dataset.paused === 'true';
+  const tryReload = (): void => {
+    if (pending && idle() && document.visibilityState === 'visible') {
+      pending = false;
+      location.reload();
+    }
+  };
+  sw.addEventListener('controllerchange', () => {
+    if (!hadController) {
+      hadController = true;
+      return;
+    }
+    pending = true;
+    tryReload();
+  });
+  new MutationObserver(tryReload).observe(html, { attributes: true, attributeFilter: ['data-view', 'data-paused'] });
+  document.addEventListener('visibilitychange', tryReload);
 }
 
 void boot();

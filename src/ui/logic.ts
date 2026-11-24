@@ -17,10 +17,17 @@ export function tuneZone(cents: number): TuneZone {
   return 'off';
 }
 
-export type HintKey = 'hintListening' | 'hintWeak' | 'hintLow' | 'hintHigh' | 'hintInTune';
+export type HintKey = 'hintListening' | 'hintWeak' | 'hintMicMuted' | 'hintLow' | 'hintHigh' | 'hintInTune';
 
-export function hintFor(status: TunerStatus, cents: number | null, weak: boolean): HintKey {
-  if (status === 'listening' || cents === null) return weak ? 'hintWeak' : 'hintListening';
+/**
+ * `micMuted`: the OS muted the mic track (e.g. another app took it) — explain that instead of
+ * asking the user to play louder.
+ */
+export function hintFor(status: TunerStatus, cents: number | null, weak: boolean, micMuted = false): HintKey {
+  if (status === 'listening' || cents === null) {
+    if (micMuted) return 'hintMicMuted';
+    return weak ? 'hintWeak' : 'hintListening';
+  }
   if (tuneZone(cents) === 'in') return 'hintInTune';
   return cents < 0 ? 'hintLow' : 'hintHigh';
 }
@@ -32,8 +39,21 @@ export function formatCents(cents: number): string {
   return `${r > 0 ? '+' : '−'}${Math.abs(r)}¢`;
 }
 
-export function formatHz(hz: number): string {
-  return hz >= 1000 ? hz.toFixed(0) : hz.toFixed(1);
+const hzFormats = new Map<string, [Intl.NumberFormat, Intl.NumberFormat]>();
+
+/**
+ * Frequency text in the UI language's number format (TR "261,6", EN "261.6"); 1 decimal below
+ * 1 kHz, none above. No digit grouping ("2093", not "2.093").
+ */
+export function formatHz(hz: number, lang = 'en'): string {
+  let f = hzFormats.get(lang);
+  if (!f) {
+    const make = (d: number) =>
+      new Intl.NumberFormat(lang, { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false });
+    f = [make(1), make(0)];
+    hzFormats.set(lang, f);
+  }
+  return hz >= 1000 ? f[1].format(hz) : f[0].format(hz);
 }
 
 export interface NoteLabel {

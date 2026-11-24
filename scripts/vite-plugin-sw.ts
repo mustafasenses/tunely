@@ -81,11 +81,21 @@ function timeout(ms) {
   return new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
 }
 
+const scopePath = new URL(scope).pathname; // "/tunely/"
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin || !url.href.startsWith(scope)) return;
+  if (url.origin !== self.location.origin) return;
+
+  // "/tunely" (no trailing slash) is the app too. Browsers only route it here when the SW's
+  // scope covers it (Service-Worker-Allowed); then send it to the shell, online or offline.
+  if (req.mode === 'navigate' && url.pathname === scopePath.slice(0, -1)) {
+    event.respondWith(Response.redirect(scope + url.search + url.hash, 301));
+    return;
+  }
+  if (!url.href.startsWith(scope)) return;
 
   if (req.mode === 'navigate') {
     // Network first (fresh app after deploys), cached shell when offline or slow.

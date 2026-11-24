@@ -23,12 +23,17 @@ const en = {
   resume: 'Resume',
   pausedTitle: 'Tuner paused',
   pausedBody: 'The microphone is off.',
+  endedTitle: 'Microphone stopped',
+  endedBody: 'The microphone was disconnected or switched off. Check it, then tap Resume.',
+  suspendedTitle: 'Listening paused',
+  suspendedBody: 'Your browser paused the audio. Tap Resume to keep tuning.',
 
   // Tuner readout
   listening: 'Listening…',
   holding: 'Last note',
   hintListening: 'Play one note and let it ring',
   hintWeak: 'Play louder or move closer',
+  hintMicMuted: 'The microphone is in use by another app',
   hintLow: 'Too low — tune up ↑',
   hintHigh: 'Too high — tune down ↓',
   hintInTune: 'In tune ✓',
@@ -78,11 +83,12 @@ const en = {
   helpStep2: 'Pluck a single tine or string and let it ring. Keep other notes quiet.',
   helpStep3Title: 'Adjust until it turns green',
   helpStep3:
-    'Turn the peg — or tap the kalimba tine — until the needle is centred and turns green.',
+    'Turn the tuning peg, or gently slide the kalimba tine, until the needle is centred and turns green.',
   helpKalimbaTip:
     'Kalimba tip: a shorter tine sounds higher. Push the tine toward the bridge to raise the pitch, pull it out to lower it.',
   aboutTitle: 'About',
   version: (v: string) => `Version ${v}`,
+  build: (b: string) => `Build ${b}`,
   aboutPrivacy:
     'Privacy: all pitch detection happens on your device. Audio is never recorded, stored or sent anywhere.',
   aboutOffline: 'Works offline once loaded. You can add it to your home screen.',
@@ -93,6 +99,7 @@ const en = {
     'no-microphone': 'No microphone found',
     'insecure-context': 'This page needs a secure connection',
     unsupported: 'This browser can’t run the tuner',
+    'mic-busy': 'The microphone is busy',
     unknown: 'Something went wrong',
   },
   errorBody: {
@@ -104,6 +111,8 @@ const en = {
       'Browsers only allow the microphone on secure (https://) pages. Open Tunely using its https:// address.',
     unsupported:
       'Please open Tunely in an up-to-date Chrome, Firefox, Safari or Edge.',
+    'mic-busy':
+      'Another app (for example a call, a video meeting or a recorder) is using the microphone. Close it, then try again.',
     unknown: 'The microphone could not be started. Please try again.',
   },
   errorIosHint: 'On iPhone/iPad: Settings → Safari → Microphone → Allow, then reload.',
@@ -116,12 +125,12 @@ export type Dict = typeof en;
 const tr: Dict = {
   appTitle: 'Tunely — Kromatik Akort Aleti',
   metaDescription:
-    'Tunely; kalimba, gitar, ukulele, ses ve daha fazlası için ücretsiz ve hassas bir kromatik akort aleti. Çevrimdışı çalışır — ses cihazınızdan asla çıkmaz.',
-  tagline: 'Kalimba, gitar, ses ve daha fazlası için hassas kromatik akort aleti.',
+    'Tunely; kalimba, gitar, ukulele, insan sesi ve daha fazlası için ücretsiz ve hassas bir kromatik akort aleti. Çevrimdışı çalışır — sesiniz cihazınızdan hiçbir yere gönderilmez.',
+  tagline: 'Kalimba, gitar, insan sesi ve daha fazlası için hassas bir kromatik akort aleti.',
 
   startButton: 'Akort etmeye başla',
-  startExplain: 'Tunely mikrofonunuzu dinler ve her notanın ne kadar doğru olduğunu gösterir.',
-  privacyNote: 'Ses cihazınızdan asla çıkmaz.',
+  startExplain: 'Tunely mikrofon üzerinden dinler ve çaldığınız notanın doğru perdeye ne kadar yakın olduğunu gösterir.',
+  privacyNote: 'Sesiniz cihazınızdan hiçbir yere gönderilmez.',
   starting: 'Başlatılıyor…',
 
   openHelp: 'Nasıl kullanılır',
@@ -131,18 +140,23 @@ const tr: Dict = {
   resume: 'Devam et',
   pausedTitle: 'Akort aleti duraklatıldı',
   pausedBody: 'Mikrofon kapalı.',
+  endedTitle: 'Mikrofon durdu',
+  endedBody: 'Mikrofonun bağlantısı kesildi ya da mikrofon kapatıldı. Kontrol edip “Devam et”e dokunun.',
+  suspendedTitle: 'Dinleme duraklatıldı',
+  suspendedBody: 'Tarayıcı sesi duraklattı. Akort etmeye devam etmek için “Devam et”e dokunun.',
 
   listening: 'Dinleniyor…',
   holding: 'Son nota',
-  hintListening: 'Tek bir nota çalın ve çınlamasına izin verin',
-  hintWeak: 'Daha yüksek sesle çalın veya yaklaşın',
+  hintListening: 'Tek bir nota çalın ve tınlamasını bekleyin',
+  hintWeak: 'Daha güçlü çalın ya da mikrofona yaklaşın',
+  hintMicMuted: 'Mikrofon başka bir uygulama tarafından kullanılıyor',
   hintLow: 'Pes — yükselt ↑',
   hintHigh: 'Tiz — düşür ↓',
   hintInTune: 'Akortlu ✓',
   centsUnit: 'sent',
   detected: 'Algılanan',
   target: 'Hedef',
-  historyLabel: 'Son 5 saniyedeki perde',
+  historyLabel: 'Son 5 saniyedeki perde değişimi',
   levelLabel: 'Giriş seviyesi',
   refTone: (note: string) => `${note} referans sesini çal`,
   a4Chip: (hz: number) => `La4 = ${hz} Hz`,
@@ -177,18 +191,19 @@ const tr: Dict = {
 
   helpTitle: 'Nasıl kullanılır',
   helpStep1Title: 'Mikrofona izin verin',
-  helpStep1: '“Akort etmeye başla”ya dokunun ve tarayıcı sorduğunda mikrofon erişimine izin verin.',
-  helpStep2Title: 'Her seferinde tek nota çalın',
-  helpStep2: 'Tek bir dili veya teli çekin ve çınlamasına izin verin. Diğer notaları susturun.',
+  helpStep1: '“Akort etmeye başla” düğmesine dokunun ve tarayıcı sorduğunda mikrofona izin verin.',
+  helpStep2Title: 'Her seferinde tek bir nota çalın',
+  helpStep2: 'Tek bir dile veya tele dokunup bırakın ve tınlamasını bekleyin. Diğer notaları susturun.',
   helpStep3Title: 'Yeşile dönene kadar ayarlayın',
   helpStep3:
-    'Burguyu çevirin — ya da kalimba dilini itin — ibre ortalanıp yeşile dönene kadar.',
+    'İbre ortaya gelip yeşile dönene kadar burguyu çevirin ya da kalimba dilini hafifçe kaydırın.',
   helpKalimbaTip:
-    'Kalimba ipucu: kısa dil daha tiz çalar. Sesi yükseltmek için dili köprüye doğru itin, alçaltmak için dışarı çekin.',
+    'Kalimba ipucu: kısa dil daha ince (tiz) ses verir. Notayı inceltmek (tizleştirmek) için dili köprüye doğru itin, kalınlaştırmak (pesleştirmek) için dışarı doğru çekin.',
   aboutTitle: 'Hakkında',
   version: (v: string) => `Sürüm ${v}`,
+  build: (b: string) => `Derleme ${b}`,
   aboutPrivacy:
-    'Gizlilik: tüm perde algılama cihazınızda yapılır. Ses asla kaydedilmez, saklanmaz veya bir yere gönderilmez.',
+    'Gizlilik: Perde algılamanın tamamı cihazınızda yapılır. Ses asla kaydedilmez, saklanmaz ya da bir yere gönderilmez.',
   aboutOffline: 'Bir kez yüklendikten sonra çevrimdışı çalışır. Ana ekranınıza ekleyebilirsiniz.',
 
   errorTitle: {
@@ -196,20 +211,23 @@ const tr: Dict = {
     'no-microphone': 'Mikrofon bulunamadı',
     'insecure-context': 'Bu sayfa güvenli bağlantı gerektiriyor',
     unsupported: 'Bu tarayıcı akort aletini çalıştıramıyor',
-    unknown: 'Bir şeyler ters gitti',
+    'mic-busy': 'Mikrofon şu anda kullanımda',
+    unknown: 'Bir sorun oluştu',
   },
   errorBody: {
     'permission-denied':
-      'Tunely’nin enstrümanınızı duyması için mikrofon gerekli. Yeniden izin vermek için: adres çubuğunun yanındaki kilit veya ayarlar simgesine dokunun, Mikrofon’u “İzin ver” yapın ve tekrar deneyin.',
+      'Tunely’nin enstrümanınızı duyabilmesi için mikrofona ihtiyacı var. Yeniden izin vermek için adres çubuğunun yanındaki kilit ya da ayarlar simgesine dokunun, Mikrofon ayarını “İzin ver” olarak değiştirin ve tekrar deneyin.',
     'no-microphone':
-      'Bir mikrofon veya kulaklık bağlayın ve başka bir uygulamanın kullanmadığından emin olun. Sonra tekrar deneyin.',
+      'Bir mikrofon ya da mikrofonlu kulaklık bağlayın ve başka bir uygulamanın onu kullanmadığından emin olun. Ardından tekrar deneyin.',
     'insecure-context':
-      'Tarayıcılar mikrofona yalnızca güvenli (https://) sayfalarda izin verir. Tunely’yi https:// adresiyle açın.',
+      'Tarayıcılar mikrofona yalnızca güvenli (https://) sayfalarda izin verir. Tunely’yi https:// ile başlayan adresinden açın.',
     unsupported:
-      'Lütfen Tunely’yi güncel bir Chrome, Firefox, Safari veya Edge ile açın.',
+      'Lütfen Tunely’yi Chrome, Firefox, Safari ya da Edge’in güncel bir sürümüyle açın.',
+    'mic-busy':
+      'Mikrofonu başka bir uygulama (örneğin bir arama, görüntülü toplantı ya da ses kaydedici) kullanıyor. O uygulamayı kapatıp tekrar deneyin.',
     unknown: 'Mikrofon başlatılamadı. Lütfen tekrar deneyin.',
   },
-  errorIosHint: 'iPhone/iPad’de: Ayarlar → Safari → Mikrofon → İzin Ver, sonra sayfayı yenileyin.',
+  errorIosHint: 'iPhone/iPad’de: Ayarlar → Safari → Mikrofon → İzin Ver yolunu izleyin, ardından sayfayı yenileyin.',
   tryAgain: 'Tekrar dene',
   reload: 'Sayfayı yenile',
 };

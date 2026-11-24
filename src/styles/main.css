@@ -57,10 +57,11 @@
   --accent-strong: #2c3cb3;
   --on-accent: #ffffff;
   --focus: #3d4fd1;
-  --c-in: #0b8a55;
-  --c-close: #a96400;
-  --c-off: #cc3a26;
-  --history-band: rgba(11, 138, 85, 0.1);
+  /* ≥ 4.5:1 on the bg / surface and on the 14 % tinted hint pills (WCAG AA). */
+  --c-in: #076b44;
+  --c-close: #8a5200;
+  --c-off: #b0301e;
+  --history-band: rgba(7, 107, 68, 0.1);
   --history-grid: rgba(77, 83, 92, 0.35);
   --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 8px 24px rgba(20, 20, 30, 0.08);
   --backdrop: rgba(30, 30, 40, 0.35);
@@ -969,6 +970,7 @@ html[data-view='start'] .brand {
 .paused-body {
   color: var(--fg-2);
   margin-bottom: 12px;
+  max-width: 30ch;
 }
 
 /* ---- lock pulse ---- */
@@ -1037,7 +1039,10 @@ dialog.sheet[open] {
 }
 
 dialog.sheet::backdrop {
-  background: var(--backdrop);
+  /* Older engines (Safari < 17, Chrome < 122) don't inherit custom properties into ::backdrop,
+     where a bare var() would compute to transparent: plain fallback + var() fallback value. */
+  background: rgba(5, 6, 8, 0.55);
+  background: var(--backdrop, rgba(5, 6, 8, 0.55));
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
 }
@@ -1373,7 +1378,14 @@ dialog.sheet::backdrop {
 }
 
 .about-version {
+  align-items: baseline;
   font-variant-numeric: tabular-nums;
+}
+
+.about-build {
+  color: var(--fg-3);
+  font-size: 12px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 /* ============================================================

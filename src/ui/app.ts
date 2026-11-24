@@ -1,6 +1,7 @@
 // Tunely UI controller: views (start / tuner / error), render loop, settings, dialogs.
 import { frequencyToNote, midiToFrequency, MAX_A4, MIN_A4, DEFAULT_A4, type NoteInfo } from '../music/notes';
 import { TunerError, type TunerEngine, type TunerErrorCode, type TunerFrame, type TunerStatus } from '../audio/types';
+import { LETTER_NAMES } from '../music/notes';
 import { applyI18n, currentLang, setLang, t } from '../i18n';
 import { Gauge } from './gauge';
 import { HistoryStrip } from './history';
@@ -30,6 +31,12 @@ import {
 import { KeepAwake } from './wake-lock';
 
 declare const __APP_VERSION__: string;
+declare const __APP_BUILD__: string;
+
+/** Error codes that have a screen (an aborted start is not an error). */
+type ShownError = Exclude<TunerErrorCode, 'aborted'>;
+/** Why the overlay over the tuner is shown. */
+type PauseReason = 'user' | 'ended' | 'suspended';
 
 type View = 'start' | 'tuner' | 'error';
 
@@ -128,8 +135,8 @@ const TEMPLATE = `
 
       <div class="paused" id="paused" hidden>
         <div class="paused-card">
-          <p class="paused-title" data-i18n="pausedTitle"></p>
-          <p class="paused-body" data-i18n="pausedBody"></p>
+          <p class="paused-title" id="paused-title"></p>
+          <p class="paused-body" id="paused-body"></p>
           <button type="button" class="btn btn-primary" id="btn-resume">${icons.play}<span data-i18n="resume"></span></button>
         </div>
       </div>
@@ -218,7 +225,7 @@ const TEMPLATE = `
       </div>
       <section class="about" aria-labelledby="about-title">
         <h3 id="about-title" data-i18n="aboutTitle"></h3>
-        <p class="about-version" id="about-version"></p>
+        <p class="about-version"><span id="about-version"></span> <span class="about-build" id="about-build"></span></p>
         <p>${icons.lock}<span data-i18n="aboutPrivacy"></span></p>
         <p data-i18n="aboutOffline"></p>
       </section>
@@ -266,6 +273,10 @@ export function mountApp({ engine, root }: AppOptions): void {
     meterFill: $(root, '#meter-fill'),
     live: $(root, '#live'),
     paused: $(root, '#paused'),
+    pausedTitle: $(root, '#paused-title'),
+    pausedBody: $(root, '#paused-body'),
+    resumeBtn: $<HTMLButtonElement>(root, '#btn-resume'),
+    pauseBtn: $<HTMLButtonElement>(root, '#btn-pause'),
     bottombar: $(root, '#bottombar'),
     pauseIcon: $(root, '#pause-icon'),
     pauseLabel: $(root, '#pause-label'),
@@ -292,13 +303,22 @@ export function mountApp({ engine, root }: AppOptions): void {
   if (!KeepAwake.supported) $(root, '#field-awake').hidden = true;
   if (!tone.supported) el.refBtn.hidden = true;
   $(root, '#about-version').dataset.version = __APP_VERSION__;
+  $(root, '#about-build').dataset.build = __APP_BUILD__;
 
   let settings: Settings = loadSettings();
   let view: View = 'start';
-  let errorCode: TunerErrorCode | null = null;
+  let errorCode: ShownError | null = null;
+  /** Overlay over the tuner: the mic is off (user pause / track ended) or audio is suspended. */
   let paused = false;
+  let pauseReason: PauseReason = 'user';
   let starting = false;
   let resumeOnVisible = false;
+  /** A background → foreground restart of the engine is in flight (see onVisible). */
+  let restarting = false;
+  let restartToken = 0;
+  /** Since when frames report a suspended AudioContext (null = audio flowing). */
+  let suspendedSince: number | null = null;
+  let micMuted = false;
 
   // ---------- settings / i18n / theme ----------
 
@@ -326,6 +346,7 @@ export function mountApp({ engine, root }: AppOptions): void {
     setLang(resolveLang(settings.lang, languages()));
     applyI18n(root);
     $(root, '#about-version').textContent = t().version(__APP_VERSION__);
+    $(root, '#about-build').textContent = `· ${t().build(__APP_BUILD__)}`;
     renderA4();
     if (errorCode) renderError(errorCode);
     renderPauseButton();
@@ -426,7 +447,7 @@ export function mountApp({ engine, root }: AppOptions): void {
     document.documentElement.dataset.view = v;
   }
 
-  function renderError(code: TunerErrorCode): void {
+  function renderError(code: ShownError): void {
     const d = t();
     el.errorTitle.textContent = d.errorTitle[code];
     el.errorBody.textContent = d.errorBody[code];
@@ -439,59 +460,118 @@ export function mountApp({ engine, root }: AppOptions): void {
   }
 
   function showError(code: TunerErrorCode): void {
+    if (code === 'aborted') return; // cancelled on purpose (e.g. page hidden) — nothing to show
     errorCode = code;
+    paused = false;
+    syncWakeLock();
     renderError(code);
     showView('error');
     el.errorTitle.focus();
   }
 
   function renderPauseButton(): void {
+    const d = t();
     el.pauseIcon.innerHTML = paused ? icons.play : icons.pause;
-    el.pauseLabel.textContent = paused ? t().resume : t().pause;
+    el.pauseLabel.textContent = paused ? d.resume : d.pause;
     el.paused.hidden = !paused;
+    el.paused.dataset.reason = pauseReason;
+    el.pausedTitle.textContent =
+      pauseReason === 'ended' ? d.endedTitle : pauseReason === 'suspended' ? d.suspendedTitle : d.pausedTitle;
+    el.pausedBody.textContent =
+      pauseReason === 'ended' ? d.endedBody : pauseReason === 'suspended' ? d.suspendedBody : d.pausedBody;
     // The overlay carries the Resume action; avoid a duplicate button in the bar.
-    $(root, '#btn-pause').style.visibility = paused ? 'hidden' : '';
+    el.pauseBtn.style.visibility = paused ? 'hidden' : '';
     tuner.classList.toggle('is-paused', paused);
+    document.documentElement.dataset.paused = String(paused);
+  }
+
+  /** Show the overlay. `focus`: move keyboard focus to Resume (it replaces the Pause button). */
+  function showPaused(reason: PauseReason, focus: boolean): void {
+    const had = paused && el.paused.contains(document.activeElement);
+    paused = true;
+    pauseReason = reason;
+    renderPauseButton();
+    syncWakeLock();
+    if (focus || had || document.activeElement === el.pauseBtn) el.resumeBtn.focus({ preventScroll: true });
   }
 
   async function start(): Promise<void> {
     if (starting) return;
     starting = true;
+    // A user start supersedes any pending background restart.
+    restarting = false;
+    restartToken++;
+    resumeOnVisible = false;
     el.startBtn.disabled = true;
     el.retryBtn.disabled = true;
+    el.resumeBtn.disabled = true;
     root.classList.add('is-starting');
     const startLabel = $(el.startBtn, '.btn-label');
     startLabel.textContent = t().starting;
+    const fromView = view;
     try {
       await engine.start();
+      if (!engine.running) return; // stopped meanwhile (e.g. page hidden) — stay where we are
       errorCode = null;
       paused = false;
+      pauseReason = 'user';
+      suspendedSince = null;
       resetTracking();
       renderPauseButton();
       showView('tuner');
       syncWakeLock();
       loop.ensure();
+      // Keep keyboard focus in the tuner (the Start / Resume / Retry button just disappeared).
+      if (fromView !== 'tuner' || el.paused.contains(document.activeElement) || document.activeElement === document.body) {
+        el.pauseBtn.focus({ preventScroll: true });
+      }
+      // The page was hidden while the mic was starting: don't keep it open in the background.
+      if (document.visibilityState === 'hidden') onHidden();
     } catch (err) {
       showError(err instanceof TunerError ? err.code : 'unknown');
     } finally {
       starting = false;
       el.startBtn.disabled = false;
       el.retryBtn.disabled = false;
+      el.resumeBtn.disabled = false;
       root.classList.remove('is-starting');
       startLabel.textContent = t().startButton;
     }
   }
 
-  function pause(): void {
+  function pause(reason: PauseReason = 'user'): void {
     tone.cancel();
     engine.stop();
-    paused = true;
+    restarting = false;
+    restartToken++;
     frame = null;
-    renderPauseButton();
-    syncWakeLock();
+    suspendedSince = null;
+    micMuted = false;
+    showPaused(reason, reason === 'user');
     resetTracking();
     lastKey = '';
     renderDisplay(true);
+  }
+
+  /** Resume button: resume suspended audio inside this gesture, or restart the mic. */
+  async function resume(): Promise<void> {
+    if (pauseReason === 'suspended' && engine.running && engine.resumeAudio) {
+      el.resumeBtn.disabled = true;
+      const ok = await engine.resumeAudio().catch(() => false);
+      el.resumeBtn.disabled = false;
+      if (ok) {
+        suspendedSince = null;
+        paused = false;
+        pauseReason = 'user';
+        renderPauseButton();
+        syncWakeLock();
+        el.pauseBtn.focus({ preventScroll: true });
+        return;
+      }
+      // Could not resume this context: start over with a fresh one (still inside the gesture).
+      engine.stop();
+    }
+    await start();
   }
 
   el.startBtn.addEventListener('click', () => void start());
@@ -501,8 +581,8 @@ export function mountApp({ engine, root }: AppOptions): void {
     } else void start();
   });
   el.reloadBtn.addEventListener('click', () => location.reload());
-  $(root, '#btn-resume').addEventListener('click', () => void start());
-  $(root, '#btn-pause').addEventListener('click', () => (paused ? void start() : pause()));
+  el.resumeBtn.addEventListener('click', () => void resume());
+  el.pauseBtn.addEventListener('click', () => (paused ? void resume() : pause()));
 
   function syncWakeLock(): void {
     keepAwake.set(settings.keepAwake && view === 'tuner' && !paused && engine.running);
@@ -510,25 +590,51 @@ export function mountApp({ engine, root }: AppOptions): void {
 
   // Release the mic when the page is hidden; resume when visible again.
   const onHidden = (): void => {
-    if (view === 'tuner' && !paused && engine.running) {
+    if (restarting) {
+      // Hidden again before the restart finished: cancel it (its start() rejects 'aborted')
+      // so the mic is never left open in the background, and retry on the next show.
+      restarting = false;
+      restartToken++;
+      resumeOnVisible = true;
+      engine.stop();
+      return;
+    }
+    if (view === 'tuner' && engine.running && (!paused || pauseReason === 'suspended')) {
       resumeOnVisible = true;
       tone.cancel();
       engine.stop();
       frame = null;
+      suspendedSince = null;
+      if (paused) {
+        // A fresh start on return gets a new context; the card comes back only if needed.
+        paused = false;
+        pauseReason = 'user';
+        renderPauseButton();
+      }
       resetTracking();
+      syncWakeLock();
     }
   };
   const onVisible = (): void => {
-    if (!resumeOnVisible) return;
+    if (!resumeOnVisible || starting) return;
     resumeOnVisible = false;
+    restarting = true;
+    const token = ++restartToken;
     engine
       .start()
       .then(() => {
+        if (token !== restartToken) return; // superseded (hidden again / user action)
+        restarting = false;
+        if (!engine.running) return;
         syncWakeLock();
         loop.ensure();
       })
-      .catch((err) => {
-        if (err instanceof TunerError && err.code === 'permission-denied') showError(err.code);
+      .catch((err: unknown) => {
+        if (token !== restartToken) return;
+        restarting = false;
+        const code = err instanceof TunerError ? err.code : 'unknown';
+        if (code === 'aborted') return;
+        if (code === 'permission-denied' || code === 'no-microphone' || code === 'mic-busy') showError(code);
         else pause(); // e.g. audio needs a fresh tap on some browsers → show "Resume"
       });
   };
@@ -589,7 +695,7 @@ export function mountApp({ engine, root }: AppOptions): void {
       status: info ? f.status : 'listening',
       info,
       label,
-      hint: hintFor(f.status, info?.cents ?? null, isWeak),
+      hint: hintFor(f.status, info?.cents ?? null, isWeak, micMuted),
       locked: lock.locked,
     };
     if (info) lastMidi = info.midi;
@@ -626,10 +732,37 @@ export function mountApp({ engine, root }: AppOptions): void {
   }
 
   engine.onFrame((f) => {
-    if (paused) return;
+    micMuted = f.input === 'muted';
+    if (f.input === 'suspended') suspendedSince ??= f.time;
+    else if (suspendedSince !== null) {
+      suspendedSince = null;
+      // Audio came back by itself (e.g. iOS interruption ended): drop the "Tap to resume" card.
+      if (paused && pauseReason === 'suspended') {
+        paused = false;
+        pauseReason = 'user';
+        renderPauseButton();
+        syncWakeLock();
+      }
+    }
+    // (While the "suspended" card is up the engine still runs: let the reading run out naturally.)
+    if (paused && pauseReason !== 'suspended') return;
     frame = f;
     process(f);
   });
+
+  /**
+   * Called every animation frame while the tuner is shown: notices an engine that stopped by
+   * itself (mic unplugged / revoked → track ended) or audio that stays suspended, and moves to
+   * a recoverable state instead of freezing on the last reading.
+   */
+  function checkEngine(now: number): void {
+    if (view !== 'tuner' || starting || restarting || document.visibilityState !== 'visible') return;
+    if (!engine.running) {
+      if (!paused) pause('ended');
+      return;
+    }
+    if (!paused && suspendedSince !== null && now - suspendedSince > 400) showPaused('suspended', false);
+  }
 
   // ---------- render ----------
 
@@ -640,10 +773,11 @@ export function mountApp({ engine, root }: AppOptions): void {
     const { status, info, label, hint, locked } = display;
     const zone = info ? tuneZone(info.cents) : 'none';
     const centsText = info ? formatCents(info.cents) : '';
-    const key = [status, label?.name, label?.octave, label?.dots, centsText, hint, locked, zone, info ? formatHz(info.targetFrequency) : '', paused].join('|');
+    const lang = currentLang();
+    const key = [status, label?.name, label?.octave, label?.dots, centsText, hint, locked, zone, info ? formatHz(info.targetFrequency, lang) : '', paused, pauseReason, lang].join('|');
     // Detected Hz changes every frame: update it separately (cheap text set).
     if (info && frame?.reading) {
-      const hz = `${formatHz(frame.reading.frequency)} Hz`;
+      const hz = `${formatHz(frame.reading.frequency, lang)} Hz`;
       if (el.hzDetected.textContent !== hz) el.hzDetected.textContent = hz;
     }
     if (!force && key === lastKey) return;
@@ -651,6 +785,14 @@ export function mountApp({ engine, root }: AppOptions): void {
 
     tuner.dataset.status = status;
     tuner.dataset.zone = zone;
+    // Machine-readable reading (letter names regardless of the naming setting) for tests / tools.
+    if (info) {
+      tuner.dataset.midi = String(info.midi);
+      tuner.dataset.note = `${LETTER_NAMES[info.pitchClass]}${info.octave}`;
+    } else {
+      delete tuner.dataset.midi;
+      delete tuner.dataset.note;
+    }
     tuner.dataset.locked = String(locked);
     tuner.dataset.naming = naming();
 
@@ -681,10 +823,11 @@ export function mountApp({ engine, root }: AppOptions): void {
     el.cents.textContent = info ? centsText : d.listening;
     el.hintText.textContent = d[hint];
     // Directional hints already carry ↑ / ↓ / ✓ in their text; only the idle hints get an icon.
-    el.hintIcon.innerHTML = hint === 'hintListening' ? icons.ear : hint === 'hintWeak' ? icons.mic : '';
+    el.hintIcon.innerHTML =
+      hint === 'hintListening' ? icons.ear : hint === 'hintWeak' ? icons.mic : hint === 'hintMicMuted' ? icons.micOff : '';
     el.hintIcon.hidden = el.hintIcon.innerHTML === '';
     if (info) {
-      el.hzTarget.textContent = `${formatHz(info.targetFrequency)} Hz`;
+      el.hzTarget.textContent = `${formatHz(info.targetFrequency, lang)} Hz`;
     } else {
       el.hzDetected.textContent = '—';
       el.hzTarget.textContent = '—';
@@ -714,6 +857,7 @@ export function mountApp({ engine, root }: AppOptions): void {
     tick: (now: number): void => {
       const dt = Math.max(0, (now - loop.last) / 1000);
       loop.last = now;
+      checkEngine(now);
       renderDisplay();
       gauge.step(dt);
       // Level meter: fast attack, slower release.
