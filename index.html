@@ -2,12 +2,68 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>scaffold</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Tunely — Chromatic Tuner</title>
+    <meta
+      name="description"
+      content="Tunely is a free, accurate chromatic tuner for kalimba, guitar, ukulele, voice and more. Works offline — audio never leaves your device."
+    />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f5f4f0" media="(prefers-color-scheme: light)" />
+    <link rel="canonical" href="https://mustafasenses.github.io/tunely/" />
+
+    <!-- Icons & PWA -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Tunely" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+    <!-- Social previews -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Tunely" />
+    <meta property="og:title" content="Tunely — Chromatic Tuner" />
+    <meta
+      property="og:description"
+      content="A free, accurate chromatic tuner for kalimba, guitar, voice and more. Works offline — audio never leaves your device."
+    />
+    <meta property="og:url" content="https://mustafasenses.github.io/tunely/" />
+    <meta property="og:image" content="https://mustafasenses.github.io/tunely/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Tunely app icon with a tuner needle, and the text: Tunely — chromatic tuner" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="tr_TR" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Tunely — Chromatic Tuner" />
+    <meta
+      name="twitter:description"
+      content="A free, accurate chromatic tuner for kalimba, guitar, voice and more. Works offline."
+    />
+    <meta name="twitter:image" content="https://mustafasenses.github.io/tunely/og-image.png" />
+
+    <script>
+      // Apply the saved theme before first paint (avoids a flash). Mirrors ui/settings.ts.
+      (function () {
+        var t = 'auto';
+        try {
+          t = (JSON.parse(localStorage.getItem('tunely.settings.v1') || '{}') || {}).theme || 'auto';
+        } catch (e) {}
+        if (t !== 'dark' && t !== 'light') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+      })();
+    </script>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <noscript>Tunely needs JavaScript to listen to your instrument. / Tunely'nin çalışması için JavaScript gerekir.</noscript>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
