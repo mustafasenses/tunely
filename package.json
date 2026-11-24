@@ -1,7 +1,8 @@
 {
   "name": "tunely",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Tunely — accurate, offline-capable chromatic tuner web app (kalimba-friendly), Turkish and English.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +10,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "make-wavs": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/make-test-wavs.ts"
+    "make-wavs": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/make-test-wavs.ts",
+    "test:e2e": "playwright test",
+    "generate-assets": "node scripts/generate-assets.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.1",
