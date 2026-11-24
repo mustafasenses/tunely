@@ -33,8 +33,9 @@
     },
     {
       "file": "kalimba-c4.wav",
-      "description": "Kalimba-model pluck C4 (261.63 Hz), onset 0.3 s, τ 1 s",
-      "durationSec": 3.5,
+      "description": "Kalimba-model pluck C4 (261.63 Hz), onset 0.3 s, τ 1 s, faded out at 3.5 s, then 3 s of silence",
+      "durationSec": 6.5,
+      "silentFromSec": 3.5,
       "notes": [
         {
           "midi": 60,
@@ -47,8 +48,9 @@
     },
     {
       "file": "kalimba-e6.wav",
-      "description": "Kalimba-model pluck E6 (1318.51 Hz), onset 0.3 s, τ 1 s",
-      "durationSec": 3.5,
+      "description": "Kalimba-model pluck E6 (1318.51 Hz), onset 0.3 s, τ 1 s, faded out at 3.5 s, then 3 s of silence",
+      "durationSec": 6.5,
+      "silentFromSec": 3.5,
       "notes": [
         {
           "midi": 88,
@@ -61,8 +63,9 @@
     },
     {
       "file": "kalimba-sequence-c4-e4-g4.wav",
-      "description": "Kalimba-model C4, E4, G4 plucked 1.5 s apart (onsets 0.3 / 1.8 / 3.3 s)",
-      "durationSec": 5.3,
+      "description": "Kalimba-model C4, E4, G4 plucked 1.5 s apart (onsets 0.3 / 1.8 / 3.3 s), then 3 s of silence",
+      "durationSec": 8.3,
+      "silentFromSec": 5.3,
       "notes": [
         {
           "midi": 60,

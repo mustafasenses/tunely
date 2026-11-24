@@ -154,3 +154,25 @@ describe('performance', () => {
     expect(perCall).toBeLessThan(8);
   });
 });
+
+describe('detectPitch memory', () => {
+  it('allocates no new buffers per frame when the FFT size alternates (short / long window)', () => {
+    const fs = 48000;
+    const L = analysisLength(fs);
+    const low = harmonicTone(82.41, fs, L, sawAmps(10), 1); // short + long MPM windows each frame
+    const high = harmonicTone(440, fs, L, sawAmps(10), 1);
+    for (let i = 0; i < 20; i++) {
+      detectPitch(low, fs);
+      detectPitch(high, fs);
+    }
+    const before = process.memoryUsage().arrayBuffers;
+    let peak = 0;
+    for (let i = 0; i < 200; i++) {
+      detectPitch(low, fs);
+      detectPitch(high, fs);
+      peak = Math.max(peak, process.memoryUsage().arrayBuffers - before);
+    }
+    // Before the fix: ~27 MB of Float64Array churn over 200 low-note frames.
+    expect(peak).toBeLessThan(1e6);
+  });
+});

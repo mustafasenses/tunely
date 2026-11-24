@@ -22,6 +22,14 @@
  *    exponential smoother (τ 200 ms while steady, down to 50 ms once the pitch moves ≥ 4 c).
  *    Confirming a new note, or re-plucking after a gap, starts a fresh track, so there is no
  *    lag on genuine note changes.
+ *  • Low notes (< ~130 Hz) only start a track after an attack: the level must be ≥ 8 dB above
+ *    its minimum over the last second (any pluck / strike / bow or voice onset). Mains hum (50/60 Hz and
+ *    its 100/120 Hz harmonics) is a steady low tone with no attack, so it never becomes a
+ *    displayed note; a plucked / bowed / sung bass note is tuned normally through its whole
+ *    sustain (continuing a live track never needs an attack). See also hum.ts.
+ *  • Noise floor: learnt only from analysed, non-silent frames that are not a confident pitch
+ *    (muted / stalled-input frames and digital silence never pull it down). Learning is fast
+ *    for `floorLearnMs` after the first real audio, and again after a long input gap.
  *  • Holding: when the signal drops (gate closes / clarity lost), the last good reading is
  *    reported as `detected` for a 100 ms grace (no flicker), then `holding` until 1.5 s after
  *    the last good frame, then `listening`.
@@ -88,7 +96,21 @@ export interface StabilizerOptions {
   holdMs: number;
   /** After a gap longer than this the note must be re-confirmed (fresh median/smoothing). */
   historyResetMs: number;
+  /** Candidates below this frequency need an attack to start a new track (hum rejection). */
+  lowNoteHz: number;
+  /** Attack = level ≥ this many dB above its minimum over the last `lowNoteLookbackMs`. */
+  lowNoteRiseDb: number;
+  lowNoteLookbackMs: number;
+  /** Clarity a new low note needs (rumble / wind noise looks weakly periodic down there). */
+  lowNoteClarity: number;
+  /** A low note held/lost for at most this long may be re-acquired without a new attack. */
+  lowNoteRelinkMs: number;
+  /** After this long without analysed input (muted, stalled), re-learn the floor quickly. */
+  relearnAfterMs: number;
 }
+
+/** Below this (dBFS) a frame is digital silence (zeros from a starting / muted device). */
+export const SILENCE_DB = -120;
 
 export const DEFAULT_STABILIZER_OPTIONS: StabilizerOptions = {
   gateOpenDb: -56,
@@ -119,6 +141,12 @@ export const DEFAULT_STABILIZER_OPTIONS: StabilizerOptions = {
   graceMs: 100,
   holdMs: 1500,
   historyResetMs: 150,
+  lowNoteHz: 130,
+  lowNoteRiseDb: 8,
+  lowNoteLookbackMs: 1000,
+  lowNoteClarity: 0.8,
+  lowNoteRelinkMs: 600,
+  relearnAfterMs: 1000,
 };
 
 export interface StabilizerInput {
@@ -128,6 +156,12 @@ export interface StabilizerInput {
   rms: number;
   /** Raw detector output for this frame (null = nothing found / not run). */
   detection: PitchDetection | null;
+  /**
+   * True when the input was not analysed this frame (muted for a reference tone, no fresh
+   * audio from a suspended / interrupted device). Only the grace / hold timers advance: the
+   * gate, onset history and noise floor are left untouched.
+   */
+  ignored?: boolean;
 }
 
 export interface StabilizerOutput {
@@ -169,6 +203,9 @@ export class PitchStabilizer {
   private lastTime: number | null = null;
   private firstTime: number | null = null;
   private recentDb: { time: number; db: number }[] = [];
+  /** Level history (silence clamped to SILENCE_DB) for the low-note attack test. */
+  private levelHist: { time: number; db: number }[] = [];
+  private ignoredSince: number | null = null;
   private attackUntil = -Infinity;
   private lastOnset = -Infinity;
 
@@ -185,6 +222,8 @@ export class PitchStabilizer {
     this.lastTime = null;
     this.firstTime = null;
     this.recentDb = [];
+    this.levelHist = [];
+    this.ignoredSince = null;
     this.attackUntil = -Infinity;
     this.lastOnset = -Infinity;
   }
@@ -204,8 +243,19 @@ export class PitchStabilizer {
     const { time, detection } = input;
     const dt = this.lastTime === null ? 0 : Math.max(0, Math.min(200, time - this.lastTime));
     this.lastTime = time;
-    if (this.firstTime === null) this.firstTime = time;
+    if (input.ignored) {
+      this.pending = [];
+      this.ignoredSince ??= time;
+      return this.idle(time);
+    }
+    if (this.ignoredSince !== null) {
+      // Back from a long gap (reference tone, interruption): the room may have changed.
+      if (time - this.ignoredSince >= o.relearnAfterMs) this.firstTime = null;
+      this.ignoredSince = null;
+    }
     const db = rmsToDb(input.rms);
+    const silent = db < SILENCE_DB;
+    if (this.firstTime === null && !silent) this.firstTime = time;
 
     // Level gate with hysteresis, relative to the noise floor when that is higher.
     const openTh = Math.max(o.gateOpenDb, this.floorDb + o.floorOpenMarginDb);
@@ -224,6 +274,10 @@ export class PitchStabilizer {
     }
     this.recentDb.push({ time, db });
     const inAttack = time < this.attackUntil;
+    while (this.levelHist.length > 0 && time - this.levelHist[0].time > o.lowNoteLookbackMs) this.levelHist.shift();
+    let levelMin = Infinity;
+    for (const r of this.levelHist) if (r.db < levelMin) levelMin = r.db;
+    this.levelHist.push({ time, db: Math.max(db, SILENCE_DB) });
 
     const track = this.track;
     let usable = false;
@@ -249,11 +303,20 @@ export class PitchStabilizer {
             ? Math.min(o.postOnsetClarity, o.minAcquireClarity)
             : o.minAcquireClarity;
       usable = clarity >= needed;
+      // Hum rejection: a new low note needs an attack (see header). Rejected frames count as
+      // noise, so a steady hum the canceller has not (yet) removed also raises the floor.
+      if (usable && !continues && detection.frequency < o.lowNoteHz) {
+        const relink =
+          track !== null &&
+          Math.abs(cents - track.cents) <= o.sameNoteCents &&
+          time - track.lastGood <= o.lowNoteRelinkMs;
+        if (!relink && (db - levelMin < o.lowNoteRiseDb || clarity < o.lowNoteClarity)) usable = false;
+      }
     }
 
     // Noise floor: only learnt from frames that are not confident pitch (so a long sustained
-    // note never raises it). Falls immediately, rises slowly.
-    if (!usable) {
+    // note never raises it), and never from digital silence. Falls immediately, rises slowly.
+    if (!usable && !silent && this.firstTime !== null) {
       if (db < this.floorDb) this.floorDb = db;
       else {
         const learning = time - this.firstTime <= o.floorLearnMs;

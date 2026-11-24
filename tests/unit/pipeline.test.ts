@@ -26,7 +26,11 @@ describe('TunerPipeline', () => {
   it('end-to-end: steady tones with 20 dB SNR noise show ≤ 1 c jitter and ≤ 3 c error', () => {
     for (const fs of [44100, 48000]) {
       for (const f of [41.2, 82.41, 196, 440, 1318.5, 2500]) {
-        const x = addNoise(harmonicTone(f, fs, fs * 3, sawAmps(20), 3), 20, Math.round(f));
+        // The tone starts (like any played note) after 200 ms of room noise: a steady low tone
+        // with no attack at all is treated as mains hum and deliberately never displayed.
+        const tone = harmonicTone(f, fs, fs * 3, sawAmps(20), 3);
+        const x = addNoise(tone, 20, Math.round(f));
+        for (let i = 0; i < 0.2 * fs; i++) x[i] -= tone[i];
         const frames = runPipeline(x, fs).filter((fr) => fr.time > 1000);
         expect(frames.every((fr) => fr.status === 'detected')).toBe(true);
         const c = frames.map((fr) => 1200 * Math.log2(fr.reading!.frequency / f));

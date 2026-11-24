@@ -7,13 +7,29 @@
 // costs ~0.3 ms for notes above ~190 Hz and < 2 ms for the lowest bass notes, so the UI
 // stays smooth without the complexity (and cross-origin-isolation requirements for
 // SharedArrayBuffer) of a worker. rAF also pauses analysis in background tabs for free.
+//
+// Input health: analysis only runs on fresh audio. While the context is not running
+// (suspended / iOS "interrupted"), the track is muted by the OS, or no new samples have
+// arrived for > STALL_MS, frames are produced by `pipeline.idle()` (the last reading is held,
+// then released; no re-analysis of a stale buffer) and carry `input` so the UI can explain.
+// Leading digital silence from a starting device is skipped the same way.
 
-import { TunerError, type TunerEngine, type TunerErrorCode, type TunerFrame } from './types.ts';
+import {
+  TunerError,
+  type TunerEngine,
+  type TunerErrorCode,
+  type TunerFrame,
+  type TunerInputIssue,
+} from './types.ts';
 import { TunerPipeline } from './pipeline.ts';
 import captureWorkletUrl from './capture-worklet.ts?worker&url';
 
 const MIN_FRAME_INTERVAL_MS = 15; // ≤ ~60 analyses per second even on 120 Hz displays
 const WORKLET_NAME = 'tunely-capture';
+/** No new samples for this long → the input is stalled; stop analysing the old buffer. */
+const STALL_MS = 100;
+/** |sample| below this is digital silence (a starting / blocked device delivers zeros). */
+const SILENT_SAMPLE = 1e-7;
 
 type AudioContextCtor = typeof AudioContext;
 
@@ -40,8 +56,9 @@ function mapMediaError(err: unknown): TunerError {
       break;
     case 'NotReadableError':
     case 'TrackStartError':
+    case 'AbortError':
       // Mic exists but cannot be opened (in use by another app / OS-level block).
-      code = 'unknown';
+      code = 'mic-busy';
       break;
     case 'TypeError':
       code = window.isSecureContext ? 'unsupported' : 'insecure-context';
@@ -56,12 +73,34 @@ function mapMediaError(err: unknown): TunerError {
 class SampleRing {
   private readonly buf: Float32Array;
   private write = 0;
+  /** Samples pushed since the last clear(). */
+  received = 0;
+  /** performance.now() of the last push. */
+  lastPush = -Infinity;
+  /** True once a non-silent sample was pushed since the last clear(). */
+  heardAudio = false;
 
   constructor(capacity: number) {
     this.buf = new Float32Array(capacity);
   }
 
-  push(chunk: Float32Array): void {
+  /** Forget everything (after a stall the old audio must not be analysed again). */
+  clear(): void {
+    this.buf.fill(0);
+    this.write = 0;
+    this.received = 0;
+    this.heardAudio = false;
+  }
+
+  push(chunk: Float32Array, now: number): void {
+    this.received += chunk.length;
+    this.lastPush = now;
+    if (!this.heardAudio) {
+      let i = 0;
+      while (i < chunk.length && Math.abs(chunk[i]) < SILENT_SAMPLE) i++;
+      if (i === chunk.length) return; // still leading digital silence: keep the ring empty
+      this.heardAudio = true;
+    }
     const cap = this.buf.length;
     let src = chunk;
     if (src.length > cap) src = src.subarray(src.length - cap);
@@ -94,6 +133,12 @@ interface Session {
   worklet?: AudioWorkletNode;
   ring?: SampleRing;
   analyser?: AnalyserNode;
+  /** Analyser path: context time at the last tick (stall detection) and audio seen yet. */
+  lastCtxTime?: number;
+  lastCtxAdvance?: number;
+  heardAudio?: boolean;
+  /** True while the previous frame had no usable input (→ clear the ring on recovery). */
+  wasIdle: boolean;
 }
 
 function releaseSession(s: Session): void {
@@ -139,6 +184,26 @@ export function createTunerEngine(): TunerEngine {
     }
   };
 
+  /** Why this session cannot be analysed right now (undefined = fresh audio is available). */
+  const inputIssue = (s: Session, now: number): TunerInputIssue | 'stalled' | 'silent' | undefined => {
+    if (s.ctx.state !== 'running') return 'suspended';
+    if (s.stream.getAudioTracks().some((t) => t.muted)) return 'muted';
+    if (s.ring) {
+      if (now - s.ring.lastPush > STALL_MS) return 'stalled';
+      if (!s.ring.heardAudio) return 'silent';
+      return undefined;
+    }
+    // AnalyserNode path: no sample counter, but the context clock must be advancing.
+    const ct = s.ctx.currentTime;
+    if (s.lastCtxTime === undefined || ct !== s.lastCtxTime) {
+      s.lastCtxTime = ct;
+      s.lastCtxAdvance = now;
+    } else if (now - (s.lastCtxAdvance ?? now) > STALL_MS) {
+      return 'stalled';
+    }
+    return undefined;
+  };
+
   const tick = (): void => {
     rafId = null;
     timerId = null;
@@ -147,9 +212,27 @@ export function createTunerEngine(): TunerEngine {
     const now = performance.now();
     if (now - lastTick >= MIN_FRAME_INTERVAL_MS) {
       lastTick = now;
-      if (s.ring) s.ring.read(s.frameBuf);
-      else if (s.analyser) s.analyser.getFloatTimeDomainData(s.frameBuf);
-      emit(s.pipeline.process(s.frameBuf, now));
+      let issue = inputIssue(s, now);
+      if (!issue && s.analyser) {
+        s.analyser.getFloatTimeDomainData(s.frameBuf);
+        if (!s.heardAudio) {
+          s.heardAudio = s.frameBuf.some((v) => Math.abs(v) >= SILENT_SAMPLE);
+          if (!s.heardAudio) issue = 'silent';
+        }
+      }
+      if (issue) {
+        if (!s.wasIdle) {
+          s.wasIdle = true;
+          s.ring?.clear(); // never re-analyse audio from before the gap
+        }
+        const frame = s.pipeline.idle(now);
+        if (issue === 'suspended' || issue === 'muted') frame.input = issue;
+        emit(frame);
+      } else {
+        s.wasIdle = false;
+        if (s.ring) s.ring.read(s.frameBuf);
+        emit(s.pipeline.process(s.frameBuf, now));
+      }
     }
     schedule();
   };
@@ -186,6 +269,8 @@ export function createTunerEngine(): TunerEngine {
     running = false;
   };
 
+  const abortedError = (): TunerError => new TunerError('aborted', 'start() was cancelled by stop()');
+
   async function doStart(gen: number): Promise<void> {
     if (typeof window === 'undefined') throw new TunerError('unsupported');
     if (!window.isSecureContext) {
@@ -194,6 +279,14 @@ export function createTunerEngine(): TunerEngine {
     const AC = getAudioContextCtor();
     if (!navigator.mediaDevices?.getUserMedia || !AC) {
       throw new TunerError('unsupported', 'getUserMedia / Web Audio not available.');
+    }
+    // Capture needs an AudioWorklet or, as a fallback, AnalyserNode float time-domain data
+    // (missing in old Safari): fail up front rather than "Listening…" forever.
+    const canWorklet = typeof AudioWorkletNode === 'function' && 'audioWorklet' in AC.prototype;
+    const canAnalyser =
+      typeof AnalyserNode === 'function' && typeof AnalyserNode.prototype.getFloatTimeDomainData === 'function';
+    if (!canWorklet && !canAnalyser) {
+      throw new TunerError('unsupported', 'Neither AudioWorklet nor AnalyserNode.getFloatTimeDomainData is available.');
     }
 
     let stream: MediaStream;
@@ -212,7 +305,7 @@ export function createTunerEngine(): TunerEngine {
     }
     if (gen !== generation) {
       stream.getTracks().forEach((t) => t.stop());
-      return;
+      throw abortedError();
     }
 
     // The context is created after the mic is open: Chrome/Firefox allow it thanks to the
@@ -227,11 +320,12 @@ export function createTunerEngine(): TunerEngine {
       throw new TunerError('unsupported', (err as Error)?.message);
     }
     const pipeline = new TunerPipeline(ctx.sampleRate);
-    const s: Session = { ctx, stream, pipeline, frameBuf: new Float32Array(pipeline.analysisLength) };
-    const cancelled = (): boolean => {
-      if (gen === generation) return false;
+    const s: Session = { ctx, stream, pipeline, frameBuf: new Float32Array(pipeline.analysisLength), wasIdle: false };
+    /** stop() was called meanwhile: release everything and reject with 'aborted'. */
+    const cancelled = (): void => {
+      if (gen === generation) return;
       releaseSession(s);
-      return true;
+      throw abortedError();
     };
 
     try {
@@ -240,7 +334,7 @@ export function createTunerEngine(): TunerEngine {
       } catch {
         /* retried on visibility / state change */
       }
-      if (cancelled()) return;
+      cancelled();
 
       s.source = ctx.createMediaStreamSource(stream);
       // Silent sink keeps the graph pulled on every browser without making any sound.
@@ -251,7 +345,7 @@ export function createTunerEngine(): TunerEngine {
       if (ctx.audioWorklet && typeof AudioWorkletNode === 'function') {
         try {
           await ctx.audioWorklet.addModule(captureWorkletUrl);
-          if (cancelled()) return;
+          cancelled();
           const node = new AudioWorkletNode(ctx, WORKLET_NAME, {
             numberOfInputs: 1,
             numberOfOutputs: 1,
@@ -261,17 +355,19 @@ export function createTunerEngine(): TunerEngine {
             channelInterpretation: 'speakers',
           });
           const ring = new SampleRing(pipeline.analysisLength * 2);
-          node.port.onmessage = (e: MessageEvent<Float32Array>) => ring.push(e.data);
+          node.port.onmessage = (e: MessageEvent<Float32Array>) => ring.push(e.data, performance.now());
           s.source.connect(node);
           node.connect(s.sink);
           s.worklet = node;
           s.ring = ring;
         } catch (err) {
-          if (cancelled()) return;
+          if (err instanceof TunerError) throw err;
+          cancelled();
           console.warn('Tunely: AudioWorklet unavailable, using AnalyserNode fallback', err);
         }
       }
       if (!s.worklet) {
+        if (!canAnalyser) throw new TunerError('unsupported', 'AudioWorklet failed and no AnalyserNode fallback.');
         const analyser = ctx.createAnalyser();
         analyser.fftSize = Math.min(32768, pipeline.analysisLength);
         analyser.smoothingTimeConstant = 0;
@@ -287,12 +383,20 @@ export function createTunerEngine(): TunerEngine {
 
     pipeline.setMuted(muted, performance.now());
     ctx.onstatechange = () => {
-      if (running && document.visibilityState === 'visible') resumeContext();
+      // Suspended / iOS "interrupted" (call, Siri, other app): try to get audio back. When the
+      // interruption ends iOS moves to 'running' on its own; if it needs a gesture, frames
+      // report input: 'suspended' and the UI offers resumeAudio().
+      if (running && session === s && ctx.state !== 'running' && document.visibilityState === 'visible') {
+        resumeContext();
+      }
     };
     for (const t of stream.getAudioTracks()) {
       t.onended = () => {
-        // Device unplugged / permission revoked: stop cleanly (UI sees `running === false`).
-        if (session === s) engine.stop();
+        // Device unplugged / permission revoked: stop cleanly. A final listening frame makes the
+        // UI drop the stale reading; it then sees `running === false` and offers a way back.
+        if (session !== s) return;
+        engine.stop();
+        emit({ status: 'listening', reading: null, level: 0, time: performance.now() });
       };
     }
     session = s;
@@ -338,6 +442,19 @@ export function createTunerEngine(): TunerEngine {
 
     get running(): boolean {
       return running;
+    },
+
+    async resumeAudio(): Promise<boolean> {
+      const ctx = session?.ctx;
+      if (!ctx || ctx.state === 'closed') return false;
+      if (ctx.state !== 'running') {
+        try {
+          await ctx.resume();
+        } catch {
+          /* still suspended */
+        }
+      }
+      return (ctx.state as AudioContextState) === 'running';
     },
   };
   return engine;

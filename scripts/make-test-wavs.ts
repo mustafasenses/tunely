@@ -29,6 +29,23 @@ function finish(x: Float32Array, peak: number): Float32Array {
   return x;
 }
 
+/** Silent tail (seconds) after the kalimba notes: holding → listening is observable before the loop restarts. */
+const TAIL_SEC = 3;
+/** Fade the ringing note out over this long before the silent tail. */
+const TAIL_FADE_SEC = 0.25;
+
+/**
+ * Appends `TAIL_SEC` of silence (only the WAV dither remains, ≈ −100 dBFS — far below the
+ * tuner's −62 dBFS gate) after fading the ringing note out over TAIL_FADE_SEC.
+ */
+function withSilentTail(x: Float32Array): Float32Array {
+  const fade = Math.round(TAIL_FADE_SEC * FS);
+  for (let i = 0; i < fade; i++) x[x.length - fade + i] *= 0.5 * (1 + Math.cos((Math.PI * i) / fade));
+  const out = new Float32Array(x.length + Math.round(TAIL_SEC * FS));
+  out.set(x);
+  return out;
+}
+
 function wav16(x: Float32Array): Uint8Array {
   const data = x.length * 2;
   const buf = new ArrayBuffer(44 + data);
@@ -59,6 +76,8 @@ interface Entry {
   file: string;
   description: string;
   durationSec: number;
+  /** Seconds from which the file is silent (below the tuner's gate), if it has a silent tail. */
+  silentFromSec?: number;
   /** Expected readings; times are seconds from the start of the file. */
   notes: { midi: number; name: string; frequency: number; cents: number; onsetSec: number }[];
 }
@@ -67,9 +86,9 @@ const NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A�
 const noteName = (m: number) => `${NAMES[m % 12]}${Math.floor(m / 12) - 1}`;
 const manifest: Entry[] = [];
 
-function write(file: string, x: Float32Array, description: string, notes: Entry['notes']): void {
+function write(file: string, x: Float32Array, description: string, notes: Entry['notes'], silentFromSec?: number): void {
   writeFileSync(join(OUT, file), wav16(x));
-  manifest.push({ file, description, durationSec: x.length / FS, notes });
+  manifest.push({ file, description, durationSec: x.length / FS, ...(silentFromSec !== undefined && { silentFromSec }), notes });
   console.log(`wrote tests/fixtures/${file} (${(x.length / FS).toFixed(1)} s)`);
 }
 
@@ -90,9 +109,13 @@ for (const [file, midi] of [
 ] as const) {
   const f = midiToHz(midi);
   const x = kalimbaTone(f, FS, { duration: 3.5, onset: 0.3, tau: 1, partialRatio: 5.9, partialAmp: 0.6, seed: midi });
-  write(file, finish(x, 0.7), `Kalimba-model pluck ${noteName(midi)} (${f.toFixed(2)} Hz), onset 0.3 s, τ 1 s`, [
-    { midi, name: noteName(midi), frequency: f, cents: 0, onsetSec: 0.3 },
-  ]);
+  write(
+    file,
+    withSilentTail(finish(x, 0.7)),
+    `Kalimba-model pluck ${noteName(midi)} (${f.toFixed(2)} Hz), onset 0.3 s, τ 1 s, faded out at 3.5 s, then ${TAIL_SEC} s of silence`,
+    [{ midi, name: noteName(midi), frequency: f, cents: 0, onsetSec: 0.3 }],
+    3.5,
+  );
 }
 
 // Three plucks 1.5 s apart (each previous tine still rings, ≈ −13 dB by the next pluck).
@@ -108,9 +131,10 @@ for (const [file, midi] of [
   for (let i = 0; i < x.length; i++) x[i] += 3e-4 * g();
   write(
     'kalimba-sequence-c4-e4-g4.wav',
-    finish(x, 0.7),
-    'Kalimba-model C4, E4, G4 plucked 1.5 s apart (onsets 0.3 / 1.8 / 3.3 s)',
+    withSilentTail(finish(x, 0.7)),
+    `Kalimba-model C4, E4, G4 plucked 1.5 s apart (onsets 0.3 / 1.8 / 3.3 s), then ${TAIL_SEC} s of silence`,
     seq.map((m, i) => ({ midi: m, name: noteName(m), frequency: midiToHz(m), cents: 0, onsetSec: start + i * gap })),
+    x.length / FS,
   );
 }
 

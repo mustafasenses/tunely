@@ -217,12 +217,13 @@ function mpm(
 
   // Autocorrelation r(τ) via FFT (zero-padded so there is no circular wrap for τ ≤ maxLag).
   const N = nextPowerOfTwo(W + maxLag + 1);
-  if (fftRe.length !== N) {
+  // Grow-only scratch + views: N alternates between sizes (short / long window) every frame.
+  if (fftRe.length < N) {
     fftRe = new Float64Array(N);
     fftIm = new Float64Array(N);
   }
-  const re = fftRe;
-  const im = fftIm;
+  const re = fftRe.subarray(0, N);
+  const im = fftIm.subarray(0, N);
   re.fill(0);
   im.fill(0);
   for (let i = 0; i < W; i++) re[i] = x[i];
@@ -510,20 +511,22 @@ function buildSpectrum(samples: Float32Array, W: number, fs: number): (Spectrum 
   // estimate can be off by up to ~10 % on strongly inharmonic tones) and to compare
   // harmonic strengths. Exact peak positions come from the Newton search on the DTFT.
   const N = nextPowerOfTwo(2 * W);
-  if (specRe.length !== N) {
+  if (specRe.length < N) {
     specRe = new Float64Array(N);
     specIm = new Float64Array(N);
   }
-  specRe.fill(0);
-  specIm.fill(0);
-  specRe.set(y.subarray(0, W));
-  fft(specRe, specIm);
+  const sre = specRe.subarray(0, N);
+  const sim = specIm.subarray(0, N);
+  sre.fill(0);
+  sim.fill(0);
+  sre.set(y.subarray(0, W));
+  fft(sre, sim);
   const half = N / 2;
-  for (let k = 0; k <= half; k++) specRe[k] = specRe[k] * specRe[k] + specIm[k] * specIm[k];
+  for (let k = 0; k <= half; k++) sre[k] = sre[k] * sre[k] + sim[k] * sim[k];
   let globalMax = 0;
-  for (let k = 1; k < half * 0.95; k++) if (specRe[k] > globalMax) globalMax = specRe[k];
+  for (let k = 1; k < half * 0.95; k++) if (sre[k] > globalMax) globalMax = sre[k];
   if (globalMax <= 0) return null;
-  return { pow: specRe, binHz: fs / N, zoom: N / W, top: half - 1, y, W, fs, globalMax };
+  return { pow: sre, binHz: fs / N, zoom: N / W, top: half - 1, y, W, fs, globalMax };
 }
 
 /** Exact f0 near the coarse estimate fc, with octave / sub-multiple / mixture guards. */
