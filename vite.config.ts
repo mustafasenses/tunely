@@ -28,5 +28,7 @@ export default defineConfig({
   test: {
     include: ['tests/unit/**/*.test.ts'],
     environment: 'node',
+    // DSP tests simulate many seconds of audio; shared CI runners are ~3x slower than a laptop.
+    testTimeout: 60_000,
   },
 });
